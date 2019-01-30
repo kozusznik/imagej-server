@@ -30,6 +30,7 @@ import io.scif.io.ByteArrayHandle;
 import io.scif.services.DatasetIOService;
 import io.scif.services.LocationService;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -54,16 +55,21 @@ import javax.ws.rs.core.UriInfo;
 
 import net.imagej.Dataset;
 import net.imagej.DatasetService;
+import net.imagej.DefaultDataset;
+import net.imagej.ImgPlus;
 import net.imagej.server.Utils;
 import net.imagej.server.services.ObjectInfo;
 import net.imagej.server.services.ObjectService;
 import net.imglib2.img.Img;
+import net.imglib2.type.numeric.RealType;
 
 import org.glassfish.jersey.media.multipart.FormDataContentDisposition;
 import org.glassfish.jersey.media.multipart.FormDataParam;
 import org.scijava.io.IOService;
 import org.scijava.plugin.Parameter;
 import org.scijava.table.Table;
+
+import de.mpicbg.ulman.imgstreamer.ImgStreamer;
 
 /**
  * Server resource for managing data structures that could not be easily handled
@@ -90,6 +96,8 @@ public class ObjectsResource {
 	@Inject
 	private ObjectService objectService;
 
+	private org.scijava.Context context;
+
 	private static final JsonNodeFactory factory = JsonNodeFactory.instance;
 
 	/**
@@ -100,6 +108,7 @@ public class ObjectsResource {
 	@Inject
 	public void initialize(final org.scijava.Context ctx) {
 		ctx.inject(this);
+		this.context = ctx;
 	}
 
 	/**
@@ -148,7 +157,7 @@ public class ObjectsResource {
 	/**
 	 * Reads the user-uploaded file into the imagej runtime. Currently only
 	 * support images and tables in text. An ID representing the data is returned.
-	 * <p> 
+	 * <p>
 	 * If no hint for format is provided, filename would be used to guess the file
 	 * format.
 	 * </p>
@@ -167,52 +176,67 @@ public class ObjectsResource {
 		@FormDataParam("file") final FormDataContentDisposition fileDetail,
 		@QueryParam("type") final String typeHint)
 	{
-		final ByteArrayHandle bah;
-		try {
-			bah = readFileInputStream(fileInputStream);
-		}
-		catch (IOException exc) {
-			throw new WebApplicationException(exc, Status.BAD_REQUEST);
-		}
-
-		// Maps a filename to a byte array in memory
-		final String filename = Utils.randomString(8) + "_" + fileDetail
-			.getFileName();
-		locationService.mapFile(filename, bah);
-
-		final String type;
-		if (typeHint != null && typeHint.length() != 0) {
-			type = typeHint.toLowerCase();
-		}
-		else {
-			final String mt = Utils.getMimetype(filename);
-			type = mt.substring(0, mt.indexOf('/'));
-		}
-
 		final Object obj;
-		try {
-			switch (type) {
-				case "image":
-					obj = datasetIOService.open(filename);
-					break;
-				case "text":
-					obj = ioService.open(filename);
-					break;
-				default:
-					throw new WebApplicationException("Unrecognized format",
-						Status.BAD_REQUEST);
+
+		if (fileDetail.getFileName().endsWith(".dat")) {
+			ImgStreamer igs = new ImgStreamer(null);
+			try {
+				ImgPlus<? extends RealType<?>> imgs = igs.read(new BufferedInputStream(
+					fileInputStream));
+				obj = new DefaultDataset(context, imgs);
+
+			}
+			catch (IOException exc) {
+				throw new RuntimeException(exc);
 			}
 		}
-		catch (final WebApplicationException exc) {
-			throw exc;
-		}
-		catch (final IOException exc) {
-			throw new WebApplicationException(exc, Status.CONFLICT);
-		}
-		finally {
-			locationService.getIdMap().remove(filename, bah);
-		}
+		else {
+			final ByteArrayHandle bah;
+			try {
+				bah = readFileInputStream(fileInputStream);
+			}
+			catch (IOException exc) {
+				throw new WebApplicationException(exc, Status.BAD_REQUEST);
+			}
 
+			// Maps a filename to a byte array in memory
+			final String filename = Utils.randomString(8) + "_" + fileDetail
+				.getFileName();
+			locationService.mapFile(filename, bah);
+
+			final String type;
+			if (typeHint != null && typeHint.length() != 0) {
+				type = typeHint.toLowerCase();
+			}
+			else {
+				final String mt = Utils.getMimetype(filename);
+				type = mt.substring(0, mt.indexOf('/'));
+			}
+
+			try {
+				switch (type) {
+					case "image":
+						obj = datasetIOService.open(filename);
+						break;
+					case "text":
+						obj = ioService.open(filename);
+						break;
+					default:
+						throw new WebApplicationException("Unrecognized format",
+							Status.BAD_REQUEST);
+				}
+			}
+			catch (final WebApplicationException exc) {
+				throw exc;
+			}
+			catch (final IOException exc) {
+				throw new WebApplicationException(exc, Status.CONFLICT);
+			}
+			finally {
+				locationService.getIdMap().remove(filename, bah);
+			}
+
+		}
 		final String id = objectService.register(obj, "uploadFile:filename=" +
 			fileDetail.getFileName());
 		return factory.objectNode().set("id", factory.textNode(id));
@@ -257,7 +281,9 @@ public class ObjectsResource {
 				}
 				// TODO: inject query parameters into config
 				final SCIFIOConfig config = new SCIFIOConfig();
-				datasetIOService.save(ds, filename, config);
+				if (!filename.endsWith(".dat")) {
+					datasetIOService.save(ds, filename, config);
+				}
 			}
 			else if (obj instanceof Table) {
 				// TODO: inject query parameters into IOPlugin (DefaultTableIOPlugin)
@@ -270,17 +296,34 @@ public class ObjectsResource {
 					Status.BAD_REQUEST);
 			}
 
+			ImgStreamer is = new ImgStreamer(null);
+			Dataset ds = (Dataset) obj;
+			is.setImageForStreaming(ds.getImgPlus());
+			long contentLenght;
+			if (!filename.endsWith(".dat")) {
+				contentLenght = bah.length();
+			}
+			else {
+				contentLenght = is.getOutputStreamLength();
+			}
+
 			final StreamingOutput so = new StreamingOutput() {
 
 				@Override
 				public void write(OutputStream output) throws IOException,
 					WebApplicationException
 				{
-					output.write(bah.getBytes(), 0, (int) bah.length());
+					if (!filename.endsWith(".dat")) {
+						output.write(bah.getBytes(), 0, (int) bah.length());
+					}
+					else {
+						is.write(output);
+					}
 				}
 			};
 			final String mt = Utils.getMimetype(filename);
-			return Response.ok(so, mt).header("Content-Length", bah.length()).build();
+			return Response.ok(so, mt).header("Content-Length", contentLenght)
+				.build();
 		}
 		catch (final WebApplicationException exc) {
 			throw exc;
