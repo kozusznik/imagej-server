@@ -181,7 +181,7 @@ public class ObjectsResource {
 		if (fileDetail.getFileName().endsWith(".dat")) {
 			ImgStreamer igs = new ImgStreamer(null);
 			try {
-				ImgPlus<? extends RealType<?>> imgs = igs.read(new BufferedInputStream(
+				ImgPlus<? extends RealType<?>> imgs = read(igs, new BufferedInputStream(
 					fileInputStream));
 				obj = new DefaultDataset(context, imgs);
 
@@ -296,15 +296,15 @@ public class ObjectsResource {
 					Status.BAD_REQUEST);
 			}
 
-			ImgStreamer is = new ImgStreamer(null);
+			ImgStreamer igs = new ImgStreamer(null);
 			Dataset ds = (Dataset) obj;
-			is.setImageForStreaming(ds.getImgPlus());
+			setImage(igs, ds.getImgPlus());
 			long contentLenght;
 			if (!filename.endsWith(".dat")) {
 				contentLenght = bah.length();
 			}
 			else {
-				contentLenght = is.getOutputStreamLength();
+				contentLenght = igs.getOutputStreamLength();
 			}
 
 			final StreamingOutput so = new StreamingOutput() {
@@ -317,7 +317,7 @@ public class ObjectsResource {
 						output.write(bah.getBytes(), 0, (int) bah.length());
 					}
 					else {
-						is.write(output);
+						igs.write(output);
 					}
 				}
 			};
@@ -351,5 +351,20 @@ public class ObjectsResource {
 			bah.write(buffer, 0, n);
 		}
 		return bah;
+	}
+
+	@SuppressWarnings({ "unchecked", "rawtypes" })
+	private ImgPlus<? extends RealType<?>> read(ImgStreamer ig, InputStream is)
+		throws IOException
+	{
+		return (ImgPlus) ig.read(is);
+	}
+
+	@SuppressWarnings({ "unchecked", "rawtypes" })
+	private void setImage(ImgStreamer ig,
+		ImgPlus<? extends RealType<?>> imgPlus)
+	{
+		ig.setImageForStreaming((ImgPlus) imgPlus);
+
 	}
 }
